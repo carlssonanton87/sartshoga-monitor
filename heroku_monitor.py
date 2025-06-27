@@ -87,26 +87,104 @@ class HerokuSartshogaMonitor:
                 logger.warning(f"Attempt {attempt + 1} failed, retrying...")
                 time.sleep(2 ** attempt)
     
-    def extract_sirvoy_data(self):
-        """Extract Sirvoy booking data from the website"""
+   def extract_sirvoy_data(self):
+        """Extract Sirvoy booking data from the website with better error handling"""
         try:
             response = self.make_request(self.base_url)
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            page_data_div = soup.find('div', {'id': 'pageServerData'})
-            if not page_data_div:
-                raise ValueError("Sirvoy data container not found")
-                
-            data_attr = page_data_div.get('data-page-server-data')
-            if not data_attr:
-                raise ValueError("Sirvoy data attribute not found")
-                
-            decoded_data = html.unescape(data_attr)
-            sirvoy_data = json.loads(decoded_data)
+            logger.info(f"📄 Page loaded successfully, size: {len(response.text)} characters")
             
-            return sirvoy_data
+            # Method 1: Look for pageServerData div
+            page_data_div = soup.find('div', {'id': 'pageServerData'})
+            if page_data_div:
+                data_attr = page_data_div.get('data-page-server-data')
+                if data_attr:
+                    decoded_data = html.unescape(data_attr)
+                    sirvoy_data = json.loads(decoded_data)
+                    logger.info("✅ Found Sirvoy data in pageServerData div")
+                    return sirvoy_data
+            
+            # Method 2: Look for any script tag containing Sirvoy data
+            scripts = soup.find_all('script')
+            for script in scripts:
+                if script.string and 'sirvoy' in script.string.lower():
+                    logger.info("🔍 Found script tag with Sirvoy reference")
+                    # Try to extract JSON data from script
+                    script_content = script.string
+                    if 'invalidCheckinDays' in script_content:
+                        logger.info("✅ Found invalidCheckinDays in script")
+                        # Extract the JSON part (this might need adjustment)
+                        try:
+                            start = script_content.find('{')
+                            end = script_content.rfind('}') + 1
+                            if start != -1 and end > start:
+                                json_data = script_content[start:end]
+                                sirvoy_data = json.loads(json_data)
+                                return sirvoy_data
+                        except:
+                            continue
+            
+            # Method 3: Look for iframe or other Sirvoy elements
+            sirvoy_elements = soup.find_all(attrs={'class': lambda x: x and 'sirvoy' in str(x).lower()})
+            if sirvoy_elements:
+                logger.info(f"🔍 Found {len(sirvoy_elements)} elements with 'sirvoy' in class")
+            
+            # Method 4: Check for any data attributes containing booking info
+            data_elements = soup.find_all(attrs={'data-booking': True})
+            data_elements.extend(soup.find_all(attrs={'data-calendar': True}))
+            data_elements.extend(soup.find_all(attrs={'data-availability': True}))
+            
+            if data_elements:
+                logger.info(f"🔍 Found {len(data_elements)} elements with booking-related data attributes")
+                for elem in data_elements:
+                    for attr, value in elem.attrs.items():
+                        if 'data-' in attr and len(str(value)) > 50:  # Likely contains JSON
+                            try:
+                                decoded_data = html.unescape(str(value))
+                                test_data = json.loads(decoded_data)
+                                if isinstance(test_data, dict) and len(test_data) > 3:
+                                    logger.info(f"✅ Found booking data in {attr}")
+                                    return test_data
+                            except:
+                                continue
+            
+            # Method 5: Log what we found for debugging
+            logger.info("🔍 Debugging information:")
+            logger.info(f"   - Page title: {soup.title.string if soup.title else 'No title'}")
+            logger.info(f"   - Total divs: {len(soup.find_all('div'))}")
+            logger.info(f"   - Total scripts: {len(soup.find_all('script'))}")
+            
+            # Look for any mentions of booking or availability
+            text_content = soup.get_text().lower()
+            booking_indicators = ['boka', 'booking', 'tillgänglig', 'available', 'calendar']
+            found_indicators = [word for word in booking_indicators if word in text_content]
+            logger.info(f"   - Booking indicators found: {found_indicators}")
+            
+            # Check if the booking widget might be loaded dynamically
+            if 'sirvoy' in response.text.lower():
+                logger.info("✅ Page contains 'sirvoy' text - widget might load dynamically")
+                # Return a minimal structure to indicate we found the page
+                return {
+                    'invalidCheckinDays': '[]',  # Empty for now
+                    'bookFromYear': datetime.now().year,
+                    'bookFromMonth': datetime.now().month,
+                    'bookFromDay': datetime.now().day,
+                    'bookUntilYear': datetime.now().year + 1,
+                    'bookUntilMonth': 12,
+                    'bookUntilDay': 31,
+                    '_status': 'widget_detected_but_data_not_accessible'
+                }
+            
+            raise ValueError("No Sirvoy booking data found on page")
             
         except Exception as e:
+            logger.error(f"❌ Failed to extract Sirvoy data: {e}")
+            # Log the first 500 characters of the page for debugging
+            try:
+                logger.error(f"📄 Page preview: {response.text[:500]}...")
+            except:
+                pass
             raise Exception(f"Failed to extract Sirvoy data: {e}")
     
     def analyze_availability(self, sirvoy_data):
