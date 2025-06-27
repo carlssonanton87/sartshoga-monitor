@@ -180,14 +180,16 @@ class HerokuSartshogaMonitor:
                     self._last_page_hash = current_hash
                     self._last_page_size = current_size
                     self._last_interactive_elements = interactive_elements
+                    self._baseline_established = True
                     
                     logger.info("📊 Baseline established for change detection")
                     logger.info(f"   - Page hash: {abs(current_hash) % 1000000}")
                     logger.info(f"   - Page size: {current_size}")
                     logger.info(f"   - Interactive elements: {interactive_elements}")
+                    logger.info("   - Current status: No availability detected (baseline)")
                     
-                    # Return some dummy available dates so the system works
-                    return ['2025-07-01', '2025-07-15', '2025-08-01'], 0
+                    # Return NO available dates for the baseline - this reflects reality
+                    return [], 1  # 0 available dates, 1 "blocked" (meaning "no availability detected")
                 
                 # Compare with previous state
                 hash_changed = current_hash != self._last_page_hash
@@ -199,23 +201,38 @@ class HerokuSartshogaMonitor:
                 if changes_detected:
                     logger.info("🎉 PAGE CHANGE DETECTED!")
                     logger.info(f"   - Hash changed: {hash_changed}")
-                    logger.info(f"   - Size changed: {size_changed} (was {self._last_page_size}, now {current_size})")
-                    logger.info(f"   - Elements changed: {elements_changed} (was {self._last_interactive_elements}, now {interactive_elements})")
+                    if hash_changed:
+                        logger.info(f"     Old hash: {abs(self._last_page_hash) % 1000000}, New hash: {abs(current_hash) % 1000000}")
+                    
+                    logger.info(f"   - Size changed: {size_changed}")
+                    if size_changed:
+                        logger.info(f"     Old size: {self._last_page_size}, New size: {current_size}, Diff: {current_size - self._last_page_size}")
+                    
+                    logger.info(f"   - Elements changed: {elements_changed}")
+                    if elements_changed:
+                        logger.info(f"     Old elements: {self._last_interactive_elements}, New elements: {interactive_elements}")
                     
                     # Update our baseline
                     self._last_page_hash = current_hash
                     self._last_page_size = current_size
                     self._last_interactive_elements = interactive_elements
                     
-                    # Return dates to trigger notification
+                    # Return dates to trigger notification (this indicates "something changed - check manually")
                     change_date = datetime.now().strftime('%Y-%m-%d')
+                    logger.info(f"🚨 Triggering change notification for date: {change_date}")
                     return [change_date], 0
                 else:
-                    logger.info("📊 No significant changes detected")
-                    return [], 1  # No available dates, 1 blocked (current state)
+                    logger.info("📊 No significant changes detected - page appears unchanged")
+                    logger.info(f"   - Current hash: {abs(current_hash) % 1000000}")
+                    logger.info(f"   - Current size: {current_size}")
+                    logger.info(f"   - Current interactive elements: {interactive_elements}")
+                    
+                    # No changes = no availability detected
+                    return [], 1  # 0 available dates, 1 "blocked"
             
             # Fallback to original method if not in change detection mode
             else:
+                logger.info("🔄 Using original Sirvoy data parsing method")
                 invalid_checkin_days = json.loads(sirvoy_data.get('invalidCheckinDays', '[]'))
                 
                 book_from_year = sirvoy_data.get('bookFromYear', datetime.now().year)
@@ -243,6 +260,7 @@ class HerokuSartshogaMonitor:
                 return available_dates, len(blocked_dates)
             
         except Exception as e:
+            logger.error(f"❌ Error in analyze_availability: {e}")
             raise Exception(f"Failed to analyze availability: {e}")
     
     def send_notification(self, subject, message):
@@ -286,7 +304,7 @@ Hej!
             logger.error(f"❌ Kunde inte skicka e-post: {e}")
     
     def check_availability(self):
-        """Main availability checking function"""
+        """Main availability checking function with improved change detection logic"""
         self.check_count += 1
         current_time = datetime.now()
         
@@ -296,31 +314,60 @@ Hej!
             sirvoy_data = self.extract_sirvoy_data()
             available_dates, blocked_count = self.analyze_availability(sirvoy_data)
             
-            logger.info(f"📊 {len(available_dates)} tillgängliga dagar, {blocked_count} blockerade")
+            # Better logging based on monitoring mode
+            if sirvoy_data.get('_monitoring_mode') == 'page_change_detection':
+                if len(available_dates) > 0:
+                    logger.info(f"🎉 CHANGE DETECTED! Potential availability update")
+                    logger.info(f"📊 Change notification triggered")
+                else:
+                    logger.info(f"📊 Page monitoring: No changes detected (no availability)")
+            else:
+                logger.info(f"📊 {len(available_dates)} tillgängliga dagar, {blocked_count} blockerade")
             
             if available_dates:
                 current_available = set(available_dates)
                 
-                logger.info(f"✅ Exempel på tillgängliga dagar: {', '.join(sorted(available_dates[:5]))}")
-                
-                if self.last_available_dates:
-                    new_dates = current_available - self.last_available_dates
-                    
-                    if new_dates:
-                        new_dates_list = sorted(list(new_dates))
-                        logger.info(f"🎉 NYA TILLGÄNGLIGA DAGAR: {', '.join(new_dates_list)}")
+                # For change detection mode, always treat changes as "new"
+                if sirvoy_data.get('_monitoring_mode') == 'page_change_detection':
+                    if self.check_count > 1:  # Skip notifications on first run (baseline)
+                        logger.info(f"🎉 PAGE CHANGE NOTIFICATION")
                         
                         self.send_notification(
-                            "🍇 Nya rum tillgängliga på Särtshöga Vingård!",
-                            f"Nya tillgängliga dagar:\n" + 
-                            "\n".join([f"📅 {date}" for date in new_dates_list])
+                            "🍇 Särtshöga Vingård - Sidan har ändrats!",
+                            f"Webbsidan för Särtshöga Vingård har ändrats!\n\n" +
+                            f"Detta kan betyda att nya rum har blivit tillgängliga.\n\n" +
+                            f"Kontrollera manuellt: {self.base_url}\n\n" +
+                            f"Kontroll #{self.check_count} genomförd {current_time.strftime('%Y-%m-%d %H:%M:%S')}"
                         )
+                    else:
+                        logger.info("📊 Första kontrollen - ingen notifikation skickas")
                 
-                self.last_available_dates = current_available
+                # For normal mode, use the standard logic
+                else:
+                    logger.info(f"✅ Exempel på tillgängliga dagar: {', '.join(sorted(available_dates[:5]))}")
+                    
+                    if self.last_available_dates:
+                        new_dates = current_available - self.last_available_dates
+                        
+                        if new_dates:
+                            new_dates_list = sorted(list(new_dates))
+                            logger.info(f"🎉 NYA TILLGÄNGLIGA DAGAR: {', '.join(new_dates_list)}")
+                            
+                            self.send_notification(
+                                "🍇 Nya rum tillgängliga på Särtshöga Vingård!",
+                                f"Nya tillgängliga dagar:\n" + 
+                                "\n".join([f"📅 {date}" for date in new_dates_list])
+                            )
+                    
+                    self.last_available_dates = current_available
+                
                 return True
                 
             else:
-                logger.info("❌ Inga tillgängliga dagar för närvarande")
+                if sirvoy_data.get('_monitoring_mode') == 'page_change_detection':
+                    logger.info("📊 Övervakning aktiv - väntar på ändringar...")
+                else:
+                    logger.info("❌ Inga tillgängliga dagar för närvarande")
                 return False
                 
         except Exception as e:
