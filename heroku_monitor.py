@@ -1,4 +1,3 @@
-# heroku_monitor.py - Modified for Heroku deployment
 #!/usr/bin/env python3
 """
 Särtshöga Vingård Availability Monitor - Heroku Version
@@ -37,9 +36,9 @@ class HerokuSartshogaMonitor:
         
         # Get configuration from environment variables
         self.email_config = self._get_email_config()
-        self.check_interval = int(os.getenv('CHECK_INTERVAL_MINUTES', '60'))  # Default 1 hour
+        self.check_interval = int(os.getenv('CHECK_INTERVAL_MINUTES', '60'))
         
-        # Store last known state (in production, you'd use a database)
+        # Store last known state
         self.last_available_dates = set()
         self.check_count = 0
         
@@ -87,7 +86,7 @@ class HerokuSartshogaMonitor:
                 logger.warning(f"Attempt {attempt + 1} failed, retrying...")
                 time.sleep(2 ** attempt)
     
-   def extract_sirvoy_data(self):
+    def extract_sirvoy_data(self):
         """Extract Sirvoy booking data from the website with better error handling"""
         try:
             response = self.make_request(self.base_url)
@@ -110,11 +109,9 @@ class HerokuSartshogaMonitor:
             for script in scripts:
                 if script.string and 'sirvoy' in script.string.lower():
                     logger.info("🔍 Found script tag with Sirvoy reference")
-                    # Try to extract JSON data from script
                     script_content = script.string
                     if 'invalidCheckinDays' in script_content:
                         logger.info("✅ Found invalidCheckinDays in script")
-                        # Extract the JSON part (this might need adjustment)
                         try:
                             start = script_content.find('{')
                             end = script_content.rfind('}') + 1
@@ -125,12 +122,7 @@ class HerokuSartshogaMonitor:
                         except:
                             continue
             
-            # Method 3: Look for iframe or other Sirvoy elements
-            sirvoy_elements = soup.find_all(attrs={'class': lambda x: x and 'sirvoy' in str(x).lower()})
-            if sirvoy_elements:
-                logger.info(f"🔍 Found {len(sirvoy_elements)} elements with 'sirvoy' in class")
-            
-            # Method 4: Check for any data attributes containing booking info
+            # Method 3: Look for any data attributes containing booking info
             data_elements = soup.find_all(attrs={'data-booking': True})
             data_elements.extend(soup.find_all(attrs={'data-calendar': True}))
             data_elements.extend(soup.find_all(attrs={'data-availability': True}))
@@ -139,7 +131,7 @@ class HerokuSartshogaMonitor:
                 logger.info(f"🔍 Found {len(data_elements)} elements with booking-related data attributes")
                 for elem in data_elements:
                     for attr, value in elem.attrs.items():
-                        if 'data-' in attr and len(str(value)) > 50:  # Likely contains JSON
+                        if 'data-' in attr and len(str(value)) > 50:
                             try:
                                 decoded_data = html.unescape(str(value))
                                 test_data = json.loads(decoded_data)
@@ -149,24 +141,23 @@ class HerokuSartshogaMonitor:
                             except:
                                 continue
             
-            # Method 5: Log what we found for debugging
+            # Method 4: Debug information
             logger.info("🔍 Debugging information:")
             logger.info(f"   - Page title: {soup.title.string if soup.title else 'No title'}")
             logger.info(f"   - Total divs: {len(soup.find_all('div'))}")
             logger.info(f"   - Total scripts: {len(soup.find_all('script'))}")
             
-            # Look for any mentions of booking or availability
+            # Look for booking indicators
             text_content = soup.get_text().lower()
             booking_indicators = ['boka', 'booking', 'tillgänglig', 'available', 'calendar']
             found_indicators = [word for word in booking_indicators if word in text_content]
             logger.info(f"   - Booking indicators found: {found_indicators}")
             
-            # Check if the booking widget might be loaded dynamically
+            # Check if page contains sirvoy
             if 'sirvoy' in response.text.lower():
                 logger.info("✅ Page contains 'sirvoy' text - widget might load dynamically")
-                # Return a minimal structure to indicate we found the page
                 return {
-                    'invalidCheckinDays': '[]',  # Empty for now
+                    'invalidCheckinDays': '[]',
                     'bookFromYear': datetime.now().year,
                     'bookFromMonth': datetime.now().month,
                     'bookFromDay': datetime.now().day,
@@ -180,7 +171,6 @@ class HerokuSartshogaMonitor:
             
         except Exception as e:
             logger.error(f"❌ Failed to extract Sirvoy data: {e}")
-            # Log the first 500 characters of the page for debugging
             try:
                 logger.error(f"📄 Page preview: {response.text[:500]}...")
             except:
@@ -275,10 +265,8 @@ Hej!
             if available_dates:
                 current_available = set(available_dates)
                 
-                # Log some available dates
                 logger.info(f"✅ Exempel på tillgängliga dagar: {', '.join(sorted(available_dates[:5]))}")
                 
-                # Check for new availability
                 if self.last_available_dates:
                     new_dates = current_available - self.last_available_dates
                     
@@ -307,31 +295,27 @@ Hej!
         """Run continuous monitoring for Heroku"""
         logger.info("🚀 Startar kontinuerlig övervakning på Heroku")
         
-        # Run first check immediately
         self.check_availability()
         
-        # Keep checking at intervals
         while True:
             try:
-                time.sleep(self.check_interval * 60)  # Convert minutes to seconds
+                time.sleep(self.check_interval * 60)
                 self.check_availability()
             except KeyboardInterrupt:
                 logger.info("⏹️ Övervakning stoppad")
                 break
             except Exception as e:
                 logger.error(f"❌ Oväntat fel: {e}")
-                time.sleep(300)  # Wait 5 minutes before retrying
+                time.sleep(300)
 
 def main():
     """Main function for Heroku"""
     monitor = HerokuSartshogaMonitor()
     
-    # For Heroku scheduler or one-off dyno
     if os.getenv('HEROKU_SCHEDULER'):
         logger.info("🕐 Kör som Heroku Scheduler job")
         monitor.check_availability()
     else:
-        # For continuous running dyno
         logger.info("♾️ Kör som kontinuerlig process")
         monitor.run_forever()
 
