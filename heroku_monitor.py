@@ -380,13 +380,87 @@ class HerokuSartshogaMonitor:
             return [], 1
     
     def analyze_real_sirvoy_data(self, sirvoy_data):
-        """Analyze real Sirvoy availability data with proper type conversion"""
+        """Debug and analyze real Sirvoy availability data structure"""
         try:
             logger.info("✅ Analyzing REAL Sirvoy availability data!")
             
-            invalid_checkin_days = json.loads(sirvoy_data.get('invalidCheckinDays', '[]'))
+            # First, let's dump ALL the raw data to understand the structure
+            logger.info("📊 RAW SIRVOY DATA DUMP:")
+            for key, value in sirvoy_data.items():
+                if isinstance(value, str) and len(value) > 100:
+                    logger.info(f"   {key}: {value[:100]}... (truncated)")
+                else:
+                    logger.info(f"   {key}: {value}")
             
-            # Convert to integers with proper error handling
+            # Parse the invalidCheckinDays
+            invalid_checkin_days_raw = sirvoy_data.get('invalidCheckinDays', '[]')
+            logger.info(f"📅 invalidCheckinDays raw: {invalid_checkin_days_raw[:200]}...")
+            
+            try:
+                invalid_checkin_days = json.loads(invalid_checkin_days_raw)
+                logger.info(f"📅 Parsed invalidCheckinDays: {len(invalid_checkin_days)} blocked dates")
+                
+                # Show some samples
+                if invalid_checkin_days:
+                    logger.info(f"   First 5 blocked: {invalid_checkin_days[:5]}")
+                    logger.info(f"   Last 5 blocked: {invalid_checkin_days[-5:]}")
+                    
+                    # Check July dates specifically
+                    july_blocked = [date for date in invalid_checkin_days if date.startswith('2025-07')]
+                    logger.info(f"   July 2025 blocked: {len(july_blocked)} dates")
+                    if july_blocked:
+                        logger.info(f"   July blocked sample: {july_blocked[:10]}")
+                    
+                    # Check specifically for July 11th
+                    july_11 = "2025-07-11"
+                    if july_11 in invalid_checkin_days:
+                        logger.info(f"❌ July 11th ({july_11}) is in BLOCKED list")
+                    else:
+                        logger.info(f"✅ July 11th ({july_11}) is NOT in blocked list")
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Could not parse invalidCheckinDays: {e}")
+                invalid_checkin_days = []
+            
+            # Look for other availability-related fields
+            logger.info("🔍 Looking for other availability fields:")
+            
+            # Check allowedStays
+            allowed_stays_raw = sirvoy_data.get('allowedStays', '[]')
+            logger.info(f"📅 allowedStays raw: {allowed_stays_raw[:200]}...")
+            
+            try:
+                allowed_stays = json.loads(allowed_stays_raw)
+                logger.info(f"📅 Parsed allowedStays: {len(allowed_stays)} entries")
+                
+                # Count non-zero entries (these might indicate availability)
+                available_count = 0
+                for i, stay in enumerate(allowed_stays):
+                    if stay and stay != 0 and stay != '0':
+                        available_count += 1
+                        if available_count <= 10:  # Show first 10
+                            logger.info(f"   Day {i}: allowed stays = {stay}")
+                
+                logger.info(f"📊 Days with allowed stays: {available_count}")
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Could not parse allowedStays: {e}")
+            
+            # Check defaultAllowedStays
+            default_allowed = sirvoy_data.get('defaultAllowedStays', '')
+            logger.info(f"📅 defaultAllowedStays: {default_allowed}")
+            
+            # Check jsUserData
+            js_user_data_raw = sirvoy_data.get('jsUserData', '{}')
+            logger.info(f"📅 jsUserData raw: {js_user_data_raw}")
+            
+            try:
+                js_user_data = json.loads(js_user_data_raw)
+                logger.info(f"📅 Parsed jsUserData: {js_user_data}")
+            except:
+                logger.info("⚠️ Could not parse jsUserData")
+            
+            # Look for booking period info
             try:
                 book_from_year = int(sirvoy_data.get('bookFromYear', datetime.now().year))
                 book_from_month = int(sirvoy_data.get('bookFromMonth', datetime.now().month))
@@ -395,62 +469,76 @@ class HerokuSartshogaMonitor:
                 book_until_year = int(sirvoy_data.get('bookUntilYear', datetime.now().year + 1))
                 book_until_month = int(sirvoy_data.get('bookUntilMonth', 12))
                 book_until_day = int(sirvoy_data.get('bookUntilDay', 31))
-            except (ValueError, TypeError) as e:
-                logger.error(f"❌ Error converting date values to integers: {e}")
-                logger.info(f"📊 Raw values: bookFromYear={sirvoy_data.get('bookFromYear')}, bookFromMonth={sirvoy_data.get('bookFromMonth')}, bookFromDay={sirvoy_data.get('bookFromDay')}")
-                # Use current date as fallback
-                book_from_year = datetime.now().year
-                book_from_month = datetime.now().month
-                book_from_day = datetime.now().day
-                book_until_year = datetime.now().year + 1
-                book_until_month = 12
-                book_until_day = 31
+                
+                start_date = datetime(book_from_year, book_from_month, book_from_day)
+                end_date = datetime(book_until_year, book_until_month, book_until_day)
+                
+                logger.info(f"📅 Booking period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+                
+                # Calculate total days in booking period
+                total_days = (end_date - start_date).days + 1
+                logger.info(f"📊 Total days in booking period: {total_days}")
+                logger.info(f"📊 Blocked days: {len(invalid_checkin_days)}")
+                logger.info(f"📊 Theoretical available days: {total_days - len(invalid_checkin_days)}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error calculating booking period: {e}")
             
-            start_date = datetime(book_from_year, book_from_month, book_from_day)
-            end_date = datetime(book_until_year, book_until_month, book_until_day)
+            # NEW APPROACH: Look for the actual availability data structure
+            # Maybe the availability is encoded differently
             
+            # Check if there's a pattern in allowedStays that shows real availability
+            try:
+                allowed_stays = json.loads(sirvoy_data.get('allowedStays', '[]'))
+                
+                # Map allowedStays to actual dates
+                available_dates_from_stays = []
+                if allowed_stays:
+                    current_date = datetime(book_from_year, book_from_month, book_from_day)
+                    
+                    for i, stay_option in enumerate(allowed_stays):
+                        date_str = current_date.strftime('%Y-%m-%d')
+                        
+                        # Check if this day allows any stays
+                        if stay_option and stay_option != 0:
+                            available_dates_from_stays.append(date_str)
+                            if len(available_dates_from_stays) <= 5:  # Log first few
+                                logger.info(f"   Available from allowedStays: {date_str} (stays: {stay_option})")
+                        
+                        current_date += timedelta(days=1)
+                        if current_date > end_date:
+                            break
+                    
+                    logger.info(f"✅ REAL AVAILABILITY from allowedStays: {len(available_dates_from_stays)} dates")
+                    
+                    # Check July 11th in this method
+                    july_11 = "2025-07-11"
+                    if july_11 in available_dates_from_stays:
+                        logger.info(f"✅ July 11th ({july_11}) found in allowedStays method!")
+                    
+                    return available_dates_from_stays, total_days - len(available_dates_from_stays)
+                
+            except Exception as e:
+                logger.error(f"❌ Error analyzing allowedStays: {e}")
+            
+            # Fallback to original method but log the discrepancy
             blocked_dates = set(invalid_checkin_days)
             available_dates = []
             
             current_date = max(start_date, datetime.now())
-            
-            # Generate list of available dates
             while current_date <= end_date:
                 date_str = current_date.strftime('%Y-%m-%d')
                 if date_str not in blocked_dates:
                     available_dates.append(date_str)
                 current_date += timedelta(days=1)
             
-            logger.info(f"📊 Real Sirvoy data analysis:")
-            logger.info(f"   - Blocked dates: {len(blocked_dates)}")
-            logger.info(f"   - Available dates: {len(available_dates)}")
-            logger.info(f"   - Booking period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-            logger.info(f"   - Source: {sirvoy_data.get('_source', 'direct_widget')}")
-            
-            # Check specifically for July 11th since you mentioned it's available
-            july_11 = "2025-07-11"
-            if july_11 in available_dates:
-                logger.info(f"✅ July 11th ({july_11}) is AVAILABLE in our data!")
-            elif july_11 in blocked_dates:
-                logger.info(f"❌ July 11th ({july_11}) is BLOCKED in our data")
-            else:
-                logger.info(f"⚠️ July 11th ({july_11}) is outside booking period")
-            
-            if len(available_dates) > 0:
-                logger.info(f"   - Sample available dates: {', '.join(sorted(available_dates[:10]))}")
-                
-                # Show July dates specifically
-                july_dates = [date for date in available_dates if date.startswith('2025-07')]
-                if july_dates:
-                    logger.info(f"   - July 2025 available dates: {', '.join(sorted(july_dates[:10]))}")
-                else:
-                    logger.info(f"   - No July 2025 dates available")
+            logger.info(f"⚠️ FALLBACK METHOD shows {len(available_dates)} available dates")
+            logger.info(f"⚠️ This doesn't match reality - there's probably a different availability structure")
             
             return available_dates, len(blocked_dates)
             
         except Exception as e:
-            logger.error(f"❌ Error analyzing real Sirvoy data: {e}")
-            logger.error(f"📊 sirvoy_data keys: {list(sirvoy_data.keys()) if isinstance(sirvoy_data, dict) else 'not dict'}")
+            logger.error(f"❌ Error in debug analysis: {e}")
             return [], 1
     
     def analyze_widget_data(self, sirvoy_data):
