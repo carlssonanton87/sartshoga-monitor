@@ -380,28 +380,41 @@ class HerokuSartshogaMonitor:
             return [], 1
     
     def analyze_real_sirvoy_data(self, sirvoy_data):
-        """Analyze real Sirvoy availability data"""
+        """Analyze real Sirvoy availability data with proper type conversion"""
         try:
             logger.info("✅ Analyzing REAL Sirvoy availability data!")
             
             invalid_checkin_days = json.loads(sirvoy_data.get('invalidCheckinDays', '[]'))
             
-            book_from_year = sirvoy_data.get('bookFromYear', datetime.now().year)
-            book_from_month = sirvoy_data.get('bookFromMonth', datetime.now().month)
-            book_from_day = sirvoy_data.get('bookFromDay', datetime.now().day)
+            # Convert to integers with proper error handling
+            try:
+                book_from_year = int(sirvoy_data.get('bookFromYear', datetime.now().year))
+                book_from_month = int(sirvoy_data.get('bookFromMonth', datetime.now().month))
+                book_from_day = int(sirvoy_data.get('bookFromDay', datetime.now().day))
+                
+                book_until_year = int(sirvoy_data.get('bookUntilYear', datetime.now().year + 1))
+                book_until_month = int(sirvoy_data.get('bookUntilMonth', 12))
+                book_until_day = int(sirvoy_data.get('bookUntilDay', 31))
+            except (ValueError, TypeError) as e:
+                logger.error(f"❌ Error converting date values to integers: {e}")
+                logger.info(f"📊 Raw values: bookFromYear={sirvoy_data.get('bookFromYear')}, bookFromMonth={sirvoy_data.get('bookFromMonth')}, bookFromDay={sirvoy_data.get('bookFromDay')}")
+                # Use current date as fallback
+                book_from_year = datetime.now().year
+                book_from_month = datetime.now().month
+                book_from_day = datetime.now().day
+                book_until_year = datetime.now().year + 1
+                book_until_month = 12
+                book_until_day = 31
             
-            book_until_year = sirvoy_data.get('bookUntilYear', datetime.now().year + 1)
-            book_until_month = sirvoy_data.get('bookUntilMonth', 12)
-            book_until_day = sirvoy_data.get('bookUntilDay', 31)
-            
-            start_date = datetime(book_from_year, book_from_month, int(book_from_day))
-            end_date = datetime(book_until_year, book_until_month, int(book_until_day))
+            start_date = datetime(book_from_year, book_from_month, book_from_day)
+            end_date = datetime(book_until_year, book_until_month, book_until_day)
             
             blocked_dates = set(invalid_checkin_days)
             available_dates = []
             
             current_date = max(start_date, datetime.now())
             
+            # Generate list of available dates
             while current_date <= end_date:
                 date_str = current_date.strftime('%Y-%m-%d')
                 if date_str not in blocked_dates:
@@ -414,13 +427,30 @@ class HerokuSartshogaMonitor:
             logger.info(f"   - Booking period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
             logger.info(f"   - Source: {sirvoy_data.get('_source', 'direct_widget')}")
             
+            # Check specifically for July 11th since you mentioned it's available
+            july_11 = "2025-07-11"
+            if july_11 in available_dates:
+                logger.info(f"✅ July 11th ({july_11}) is AVAILABLE in our data!")
+            elif july_11 in blocked_dates:
+                logger.info(f"❌ July 11th ({july_11}) is BLOCKED in our data")
+            else:
+                logger.info(f"⚠️ July 11th ({july_11}) is outside booking period")
+            
             if len(available_dates) > 0:
-                logger.info(f"   - Sample available dates: {', '.join(sorted(available_dates[:5]))}")
+                logger.info(f"   - Sample available dates: {', '.join(sorted(available_dates[:10]))}")
+                
+                # Show July dates specifically
+                july_dates = [date for date in available_dates if date.startswith('2025-07')]
+                if july_dates:
+                    logger.info(f"   - July 2025 available dates: {', '.join(sorted(july_dates[:10]))}")
+                else:
+                    logger.info(f"   - No July 2025 dates available")
             
             return available_dates, len(blocked_dates)
             
         except Exception as e:
             logger.error(f"❌ Error analyzing real Sirvoy data: {e}")
+            logger.error(f"📊 sirvoy_data keys: {list(sirvoy_data.keys()) if isinstance(sirvoy_data, dict) else 'not dict'}")
             return [], 1
     
     def analyze_widget_data(self, sirvoy_data):
